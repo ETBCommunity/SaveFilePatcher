@@ -1,7 +1,7 @@
 # Save File Patcher
 This program can be used to update the save file list in Escape the Backrooms without needing to replace existing save files.
 
-Written by [RedTuna](https://github.com/CannedRedTuna)
+Code written by [RedTuna](https://github.com/CannedRedTuna)
 
 # How to use
 - Download the program in the [Releases tab](https://github.com/ETBCommunity/SaveFilePatcher/releases/latest)
