@@ -1,33 +1,14 @@
 // SaveFilePatcher.c by RedTuna (@CannedRedTuna on GitHub)
-
-#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <windows.h>
 
-#define IntSize (sizeof(uint32_t))
-typedef unsigned long uLong;
+#define Int32Size (sizeof(uint32_t))
+#define Int64Size (sizeof(uint64_t))
+#define SAFE_FREE(ptr) do { free(ptr); (ptr) = NULL; } while (0)
 typedef unsigned char uChar;
-
-int Backup(const uChar* Data, const uLong FileSize){
-    FILE* backup = fopen("MAINSAVE.sav.bak", "wb");
-    if (!backup){
-        printf("Backup Failed!");
-        getchar();
-        return -1;
-    }
-
-    fwrite(Data, 1, FileSize, backup);
-    fclose(backup);
-    return 0;
-}
-
-void fullFree(uChar** Pointer){
-    free(*Pointer);
-    *Pointer = NULL;
-}
 
 void ArrFree(char** Pointer, int Capacity){
     for (int i = Capacity - 1; i >= 0; i--){
@@ -36,76 +17,85 @@ void ArrFree(char** Pointer, int Capacity){
     }
 }
 
-uLong EndOfArray(const uChar* Data){
-
-    const uLong ArrayCountOffset = 0x4FC;
-    const uLong ArraySizeOffset = 0x4E3;
-
-    uint64_t ArraySize = 0;
-
-    memcpy(&ArraySize, &Data[ArraySizeOffset], sizeof(uint64_t));
-
-    return ArraySize + ArrayCountOffset;
+void BuildPath(char* out, size_t outSize, const char* dir, const char* fileName) {
+    snprintf(out, outSize, "%s\\%s", dir, fileName);
 }
 
-int ProcessSave(uChar** Data, uLong* outFileSize){
-    const char* filename = "MAINSAVE.sav";
-    const uLong HubUnlockedOffset = 0x4BF;
+int CreateBackup(const uChar* SaveFile, const size_t Size, const char* basePath){
 
-    FILE* save = fopen(filename, "rb");
+    char filePath[MAX_PATH];
+    BuildPath(filePath, sizeof(filePath), basePath, "MAINSAVE.sav.bak");
 
-    if (!save){
-        printf("MAINSAVE.sav not found.\n");
-        getchar();
+    FILE* backup = fopen(filePath, "rb");
+    if (backup){
+        fclose(backup);
+        return 0;
+    }
+
+    FILE* Backup = fopen(filePath, "wb");
+    if (!Backup){
+        perror("Failed to create a backup file");
         return -1;
     }
 
-    fseek(save, 0, SEEK_END);
-    uLong FileSize = ftell(save);
-    fseek(save, 0, SEEK_SET);
+    fwrite(SaveFile, 1, Size, Backup);
+    fclose(Backup);
 
-    if (FileSize < 0xA000){
-        fclose(save);
-        printf("File Likely corrupted.\n");
-        getchar();
-        return -1;
-    }
-
-    *Data = malloc(FileSize);
-    if (!*Data){
-        printf("Try downloading more ram.\n");
-        getchar();
-        fclose(save);
-        return -1;
-    }
-
-    fread(*Data, 1, FileSize, save);
-    fclose(save);
-    Backup(*Data, FileSize);
-
-if ((*Data)[0] != 'G'){
-    printf("What\n");
-    fullFree(Data);
-    getchar();
-    return -1;
+    return 0;
 }
 
-if ((*Data)[HubUnlockedOffset] != 'S'){
-    printf("Detected missing savelist.\n");
-    const uLong RepairDataSize = 69;
-    const uLong NewFileSize = FileSize + RepairDataSize;
+int WriteSaveFile(const uChar* PatchedSaveFile, const size_t PatchedSize, const char* basePath){
+    char filePath[MAX_PATH];
+    BuildPath(filePath, sizeof(filePath), basePath, "MAINSAVE.sav");
 
-    const uLong BackupSize = FileSize - HubUnlockedOffset + IntSize;
-    uChar* EmergencyRepairs = malloc(BackupSize);
-    if (!EmergencyRepairs){
-        printf("Try downloading more ram.\n");
-        fullFree(Data);
-        getchar();
+    FILE* Patch = fopen(filePath, "wb");
+    if (!Patch){
+        perror("Failed to write the patch to file");
         return -1;
     }
 
-    printf("Generating a new savelist.\n");
-    const uChar RepairData[69] = {
+    fwrite(PatchedSaveFile, 1, PatchedSize, Patch);
+    fclose(Patch);
+
+    return 0;
+}
+
+int isValid(const uChar* SaveFile, const size_t Size) {
+    if (Size < 0x4C7){
+        fprintf(stderr, "File too small to be a savefile.");
+        return -1;
+    }
+
+    if (memcmp(SaveFile, "GVAS", 4) != 0) {
+        fprintf(stderr, "Invalid File Header\n");
+        return -1;
+    }
+
+    else if (Size == 0x4C7){
+        printf("Outdated Savefile.\nUpdating savefile.\n");
+        return 1; 
+    }
+
+    else if (Size < 0xA000) {
+        fprintf(stderr, "Unexpected FileSize. File may be corrupted.\n");
+        return -1;
+    }
+
+    else if (memcmp(&SaveFile[0x4BF], "SingleplayerSaves", 18) != 0 && Size > 0x4BB) {
+        printf("Save Array is misssing.\nCreating new Array.\n");
+        return 1; 
+    }
+
+    else {
+        return 0;
+    }
+}
+
+int RecoverArray(uChar** SaveFile, size_t* Size) {
+    const size_t RepairBlockSize = 69;
+    const size_t RepairStart = 0x4BB;
+    const size_t bufferSize = *Size - RepairStart;
+    const uChar RepairBlock[69] = {
         0x12, 0x00, 0x00, 0x00, 0x53, 0x69, 0x6E, 0x67, 0x6C, 0x65, 0x70, 0x6C,
         0x61, 0x79, 0x65, 0x72, 0x53, 0x61, 0x76, 0x65, 0x73, 0x00, 0x0E, 0x00,
         0x00, 0x00, 0x41, 0x72, 0x72, 0x61, 0x79, 0x50, 0x72, 0x6F, 0x70, 0x65,
@@ -113,63 +103,140 @@ if ((*Data)[HubUnlockedOffset] != 'S'){
         0x0C, 0x00, 0x00, 0x00, 0x53, 0x74, 0x72, 0x50, 0x72, 0x6F, 0x70, 0x65,
         0x72, 0x74, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     };
-    memcpy(EmergencyRepairs, &(*Data)[HubUnlockedOffset - IntSize], BackupSize);
 
-    uChar* TempData = realloc(*Data, NewFileSize);
-    if (!TempData){
-        printf("Realloc failed\n");
-        free(EmergencyRepairs);
-        fullFree(Data);
-        getchar();
+    uChar *buffer = malloc(bufferSize);
+    if (!buffer) {
+        perror("Failed to allocate memory to recover array");
         return -1;
     }
 
-    *Data = TempData;
+    memcpy(buffer, &(*SaveFile)[RepairStart], bufferSize);
 
-    memcpy(&(*Data)[HubUnlockedOffset - IntSize], RepairData, RepairDataSize);
-    memcpy(&(*Data)[HubUnlockedOffset - IntSize + RepairDataSize], EmergencyRepairs, BackupSize);
-
-    FileSize = NewFileSize;
-    if (outFileSize){
-        *outFileSize = NewFileSize;
+    uChar *temp = realloc(*SaveFile, *Size + RepairBlockSize);
+    if (!temp) {
+        perror("Failed to reallocate memory to recover array");
+        SAFE_FREE(buffer);
+        return -1;
     }
 
-    free(EmergencyRepairs);
-    printf("Successfully generated a new savelist.\n");
-}
+    *SaveFile = temp;
+    memcpy(&(*SaveFile)[RepairStart], RepairBlock, RepairBlockSize);
+    memcpy(&(*SaveFile)[RepairStart + RepairBlockSize], buffer, bufferSize);
+    SAFE_FREE(buffer);
 
-    if (outFileSize){
-        *outFileSize = FileSize;
-    }
+    *Size = *Size + RepairBlockSize;
+
     return 0;
 }
 
-int RebuildArray() {
-    const uLong ArraySizeOffset = 0x4E3;
-    const uLong ArrayCountOffset = 0x4FC;
+int GetSaveFile(uChar** SaveFile, size_t* Size, const char* basePath){
 
-    uChar* Data = NULL;
-    uLong FileSize = 0;
+    char filePath[MAX_PATH];
+    BuildPath(filePath, sizeof(filePath), basePath, "MAINSAVE.sav");
 
-    if (ProcessSave(&Data, &FileSize) != 0){
+    FILE* file = fopen(filePath, "rb");
+    if (!file){
+        perror("Failed to open MAINSAVE.sav");
         return -1;
     }
 
-    uLong NewFileSize = ArrayCountOffset + IntSize;
-    uint64_t NewArraySize = IntSize;
-
-    int DynArrSize = 10;
-    int ElementCount = 0;
-    char** FileNames = malloc(DynArrSize * sizeof(char*));
-    if (!FileNames){
-        printf("Try downloading more ram.\n");
-        fullFree(&Data);
-        getchar();
+    fseek(file, 0, SEEK_END);
+    __int64 fileSize = _ftelli64(file);
+    if (fileSize < 0) {
+        perror("ftell failed");
+        fclose(file);
         return -1;
     }
+    *Size = (size_t)fileSize;
+    fseek(file, 0, SEEK_SET);
+
+    *SaveFile = malloc(*Size);
+    if (!*SaveFile){
+        perror("Failed to allocate memory for the save file");
+        fclose(file);
+        return -1;
+    }
+
+    fread(*SaveFile, 1, *Size, file);
+    fclose(file);
+
+    if (CreateBackup(*SaveFile, *Size, basePath) != 0){
+        SAFE_FREE(*SaveFile);
+        return -1;
+    }
+
+    return 0;
+}
+
+int UpdateArray(const char* basePath){
+    size_t ArraySizePos = 0x4E3;
+    size_t ArrayCountPos = 0x4FC;
+    size_t ArrayStartPos = 0x500;
+
+    uint64_t ArraySize = 0;
+    uint64_t PatchedArraySize = Int32Size;
+    int PatchedArrayCount = 0;
+    
+    uChar* SaveFile = NULL;
+    size_t Size = 0;
+    uint64_t PatchedSize = 0;
+
+    if (GetSaveFile(&SaveFile, &Size, basePath) != 0){
+        return -1;
+    }
+
+    switch (isValid(SaveFile, Size)){
+        case -1: {
+            SAFE_FREE(SaveFile);
+            return -1;
+        }
+
+        case 1:{
+            if (RecoverArray(&SaveFile, &Size) !=0){
+                SAFE_FREE(SaveFile);
+                return -1;
+            }
+            break;
+        }
+        case 0: break;
+    }
+
+    memcpy(&ArraySize, &SaveFile[ArraySizePos], Int64Size);
+
+    size_t ArrayEndPos = ArrayCountPos + ArraySize;
+
+    if (ArrayEndPos >= Size) {
+        fprintf(stderr, "Array Size exceeds file size. File likely corrupt.\n");
+        SAFE_FREE(SaveFile);
+        return -1;
+    }
+
+    uChar* buffer = malloc(Size - ArrayEndPos);
+    if (!buffer){
+        perror("Failed to allocate memory to update the array");
+        SAFE_FREE(SaveFile);
+        return -1;
+    }
+
+    memcpy(buffer, &SaveFile[ArrayEndPos], Size - ArrayEndPos);
+
+    int DynArraySize = 10;
+    int DynArrayElementCount = 0;
+
+    char** fileNames = malloc(DynArraySize * sizeof(char*));
+    if (!fileNames){
+        perror("Failed to allocate memory for the Dynamic Array");
+        SAFE_FREE(buffer);
+        SAFE_FREE(SaveFile);
+        return -1;
+    }
+
+    PatchedSize = (Size - ArrayEndPos) + ArrayStartPos;
 
     WIN32_FIND_DATA findData;
-    HANDLE hFind = FindFirstFile("MULTIPLAYER*.sav", &findData);
+    char searchPath[MAX_PATH];
+    BuildPath(searchPath, sizeof(searchPath), basePath, "MULTIPLAYER*.sav");
+    HANDLE hFind = FindFirstFile(searchPath, &findData);
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
             if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -177,109 +244,87 @@ int RebuildArray() {
                 const int StrLen = strlen(fileName) - 4;
                 if (StrLen < 1) continue;
 
-                if (ElementCount >= DynArrSize) {
-                    DynArrSize *= 2;
-                    char** temp = realloc(FileNames, DynArrSize * sizeof(char*));
+                if (DynArrayElementCount >= DynArraySize) {
+                    DynArraySize *= 2;
+                    char** temp = realloc(fileNames, DynArraySize * sizeof(char*));
                     if (!temp) {
-                        printf("Try downloading even more ram.\n");
-                        ArrFree(FileNames, ElementCount);
-                        free(FileNames);
-                        fullFree(&Data);
+                        perror("Failed to reallocate memory when updating the array");
+                        ArrFree(fileNames, DynArrayElementCount);
+                        free(fileNames);
+                        SAFE_FREE(buffer);
+                        SAFE_FREE(SaveFile);
                         FindClose(hFind);
-                        getchar();
                         return -1;
                     }
-                    FileNames = temp;
+                    fileNames = temp;
                 }
 
-                FileNames[ElementCount] = malloc(StrLen + 1);
-                if (!FileNames[ElementCount]){
-                    ArrFree(FileNames, ElementCount);
-                    free(FileNames);
-                    fullFree(&Data);
+                fileNames[DynArrayElementCount] = malloc(StrLen + 1);
+                if (!fileNames[DynArrayElementCount]){
+                    perror("Failed to allocate memory when updating the array");
+                    ArrFree(fileNames, DynArrayElementCount);
+                    free(fileNames);
+                    SAFE_FREE(buffer);
+                    SAFE_FREE(SaveFile);
                     FindClose(hFind);
-                    getchar();
                     return -1;
                 }
-                strncpy(FileNames[ElementCount], fileName, StrLen);
-                FileNames[ElementCount][StrLen] = '\0';
+                snprintf(fileNames[DynArrayElementCount], StrLen + 1, "%.*s", StrLen, fileName);
+                fileNames[DynArrayElementCount][StrLen] = '\0';
 
-                NewFileSize += (IntSize + StrLen + 1);
-                NewArraySize += (IntSize + StrLen + 1);
-                ElementCount++;
+                PatchedSize += (Int32Size + StrLen + 1);
+                PatchedArraySize += (Int32Size + StrLen + 1);
+                DynArrayElementCount++;
             }
         } while (FindNextFile(hFind, &findData));
         FindClose(hFind);
     }
 
-    uLong Cursor = ArrayCountOffset;
-    uLong DataEnd = EndOfArray(Data);
-    uLong SpliceSize = FileSize - DataEnd;
-    NewFileSize += SpliceSize;
+    PatchedArrayCount = DynArrayElementCount;
 
-    uChar* Splice = malloc(SpliceSize);
-    if (!Splice){
-        printf("Try downloading more ram.\n");
-        fullFree(&Data);
-        ArrFree(FileNames, ElementCount);
-        free(FileNames);
+    uChar* PatchedSaveFile = malloc(PatchedSize);
+    if (!PatchedSaveFile){
+        perror("Failed to allocate memory for the patched save");
+        ArrFree(fileNames, DynArrayElementCount);
+        free(fileNames);
+        SAFE_FREE(buffer);
+        SAFE_FREE(SaveFile);
         return -1;
     }
-    memcpy(Splice, &Data[DataEnd], SpliceSize);
+    memcpy(PatchedSaveFile, SaveFile, ArrayStartPos);
+    SAFE_FREE(SaveFile);
 
-    uChar* ReWrite = malloc(NewFileSize);
-    if (!ReWrite){
-        printf("Try downloading more ram.\n");
-        fullFree(&Data);
-        fullFree(&Splice);
-        ArrFree(FileNames, ElementCount);
-        free(FileNames);
-        return -1;
-    }
-    memcpy(ReWrite, Data, ArrayCountOffset);
-    memcpy(&ReWrite[Cursor], &ElementCount, IntSize);
+    memcpy(&PatchedSaveFile[ArraySizePos], &PatchedArraySize, Int64Size);
+    memcpy(&PatchedSaveFile[ArrayCountPos], &PatchedArrayCount, Int32Size);
 
-    Cursor += IntSize;
+    size_t ptr = ArrayStartPos;
     uint32_t StrLen = 0;
-    for (int i = 0; i < ElementCount; i++){
-        StrLen = strlen(FileNames[i]) + 1;
-        memcpy(&ReWrite[Cursor], &StrLen, IntSize);
-        Cursor += IntSize;
-        memcpy(&ReWrite[Cursor], FileNames[i], StrLen);
-        Cursor += StrLen;
+    for (int i = 0; i < DynArrayElementCount; i++){
+        StrLen = strlen(fileNames[i]) + 1;
+        memcpy(&PatchedSaveFile[ptr], &StrLen, Int32Size);
+        ptr += Int32Size;
+        memcpy(&PatchedSaveFile[ptr], fileNames[i], StrLen);
+        ptr += StrLen;
     }
+    ArrFree(fileNames, DynArrayElementCount);
+    free(fileNames);
 
-    memcpy(&ReWrite[Cursor], Splice, SpliceSize);
-    memcpy(&ReWrite[ArraySizeOffset], &NewArraySize, sizeof(uint64_t));
+    memcpy(&PatchedSaveFile[ptr], buffer, Size - ArrayEndPos);
+    SAFE_FREE(buffer);
 
-    fullFree(&Data);
-    fullFree(&Splice);
-
-    FILE* Update = fopen("MAINSAVE.sav", "wb");
-    if (!Update){
-        printf("The file just didn't open.\n");
-        fullFree(&ReWrite);
-        ArrFree(FileNames, ElementCount);
-        free(FileNames);
+    if(WriteSaveFile(PatchedSaveFile, PatchedSize, basePath) != 0){
+        SAFE_FREE(PatchedSaveFile);
         return -1;
     }
-
-    fwrite(ReWrite, 1, NewFileSize, Update);
-    fclose(Update);
-
-    fullFree(&ReWrite);
-    ArrFree(FileNames, ElementCount);
-    free(FileNames);
-
-    printf("Array rebuilt with %d files\n", ElementCount);
+    SAFE_FREE(PatchedSaveFile);
     return 0;
 }
 
-void MonitorDirectory() {
-    char buffer[1024];
+void MonitorDirectory(const char* basePath) {
+    char buffer[16384];
     DWORD bytesReturned;
     HANDLE hDir = CreateFile(
-        ".",
+        basePath,
         FILE_LIST_DIRECTORY,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
@@ -289,71 +334,67 @@ void MonitorDirectory() {
     );
 
     if (hDir == INVALID_HANDLE_VALUE) {
-        printf("Windows throwing\n");
+        perror("Failed to open save directory for automatic updates");
         getchar();
         return;
     }
 
     printf("Waiting for files.\n");
-
     while (1) {
-        if (ReadDirectoryChangesW(
-            hDir,
-            buffer,
-            sizeof(buffer),
-            FALSE,
+        if (ReadDirectoryChangesW(hDir, buffer, sizeof(buffer), FALSE, 
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytesReturned,
-            NULL,
-            NULL
-        )) {
+            &bytesReturned, NULL, NULL)) {
+            
             FILE_NOTIFY_INFORMATION* event = (FILE_NOTIFY_INFORMATION*)buffer;
+            int needsUpdate = 0;
 
             do {
                 const WCHAR* filename = event->FileName;
                 const int len = event->FileNameLength / sizeof(WCHAR);
 
                 if (len > 15 && wcsncmp(filename, L"MULTIPLAYER", 11) == 0) {
-                    WCHAR ext[5];
-                    wcsncpy(ext, &filename[len - 4], 4);
-                    ext[4] = L'\0';
-
-                    if (wcscmp(ext, L".sav") == 0 &&
-                        (event->Action == FILE_ACTION_ADDED ||
-                         event->Action == FILE_ACTION_RENAMED_NEW_NAME)) {
-
-                        printf("\nNew save detected.\n");
-                        Sleep(100);
-
-                        if (RebuildArray() == 0) {
-                            printf("MAINSAVE.sav successfully updated\n");
-                        } else {
-                            printf("Yeah idfk\n");
-                        }
+                        WCHAR ext[5];
+                        wcsncpy(ext, &filename[len - 4], 4);
+                        ext[4] = L'\0';
+                    if (wcscmp(ext, L".sav") == 0) {
+                        needsUpdate = 1;
                     }
                 }
-                
+
                 if (event->NextEntryOffset == 0) break;
                 event = (FILE_NOTIFY_INFORMATION*)((BYTE*)event + event->NextEntryOffset);
+
             } while (1);
+
+            if (needsUpdate) {
+                printf("\nChange detected. Updating save array...\n");
+                Sleep(100);
+
+                if (UpdateArray(basePath) == 0) {
+                    printf("MAINSAVE.sav successfully updated\n");
+                }
+            }
         }
     }
-
-    CloseHandle(hDir);
 }
 
-int main() {
+int main(){
     printf("Starting...\n");
-    
-    printf("Performing initial rebuild...\n");
-    if (RebuildArray() != 0) {
-        printf("Initial rebuild failed\n");
+
+    char basePath[MAX_PATH];
+    const char *localappdata = getenv("LOCALAPPDATA");
+    if (!localappdata) {
+        fprintf(stderr, "Failed to get LOCALAPPDATA path.\n");
         return -1;
     }
-    
-    printf("Initial rebuild complete\n\n");
-    
-    MonitorDirectory();
-    
+    snprintf(basePath, sizeof(basePath), "%s\\EscapeTheBackrooms\\Saved\\SaveGames", localappdata);
+    printf("Found Save Folder.\n");
+
+    UpdateArray(basePath);
+
+    printf("Initial rebuild to remove old files complete.\n");
+
+    MonitorDirectory(basePath);
+
     return 0;
-}  
+}
